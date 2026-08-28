@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from urllib.parse import quote, urlparse, parse_qs
+from urllib.parse import quote, urlparse
 import time
 
 
@@ -20,7 +20,7 @@ APPS_SCRIPT_URL = (
 # SEARCH ENGINE
 # =========================================================
 
-GOOGLE_URL = "https://www.google.com/search?q={}"
+DDG_URL = "https://html.duckduckgo.com/html/?q={}"
 
 
 # =========================================================
@@ -77,13 +77,12 @@ KEYWORDS = {
 
 
 # =========================================================
-# HTTP SESSION
+# SESSION
 # =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-
     "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 "
@@ -96,71 +95,38 @@ session.headers.update({
 
     "Accept-Language":
         "en-US,en;q=0.9"
-
 })
 
 
 # =========================================================
-# CLEAN TEXT
+# CLEAN
 # =========================================================
 
-def clean(value):
+def clean(text):
 
-    if not value:
+    if not text:
         return ""
 
     return " ".join(
-        str(value).split()
+        str(text).split()
     ).strip()
 
 
 # =========================================================
-# GOOGLE URL CLEANER
+# CHECK DOMAIN
 # =========================================================
 
-def unwrap_url(href):
-
-    if not href:
-        return ""
-
-    if href.startswith("/url?"):
-
-        parsed = urlparse(href)
-
-        params = parse_qs(
-            parsed.query
-        )
-
-        if "q" in params:
-            return params["q"][0]
-
-        if "url" in params:
-            return params["url"][0]
-
-    if href.startswith("http://"):
-        return href
-
-    if href.startswith("https://"):
-        return href
-
-    return ""
-
-
-# =========================================================
-# CHECK PLATFORM
-# =========================================================
-
-def belongs_to_platform(url, domain):
+def is_platform_url(url, domain):
 
     try:
 
-        host = (
+        hostname = (
             urlparse(url)
             .netloc
             .lower()
         )
 
-        return domain in host
+        return domain in hostname
 
     except Exception:
 
@@ -168,69 +134,31 @@ def belongs_to_platform(url, domain):
 
 
 # =========================================================
-# BUILD QUERY
+# FIND KEYWORD
 # =========================================================
 
-def build_query(domain, keywords):
+def find_keyword(text, keywords):
 
-    keyword_query = " OR ".join(
-        f'"{keyword}"'
-        for keyword in keywords
-    )
-
-    return (
-        f"site:{domain} "
-        f"({keyword_query})"
-    )
-
-
-# =========================================================
-# DETECT MATCHING KEYWORD
-# =========================================================
-
-def detect_keyword(text, keywords):
-
-    text = text.lower()
+    lower = text.lower()
 
     matches = []
 
     for keyword in keywords:
 
-        if keyword.lower() in text:
+        if keyword.lower() in lower:
 
-            matches.append(
-                keyword
-            )
+            matches.append(keyword)
 
     if not matches:
         return ""
 
-    # longest matching keyword first
+    # longest / most specific first
     matches.sort(
         key=len,
         reverse=True
     )
 
     return matches[0]
-
-
-# =========================================================
-# DETECT CATEGORY
-# =========================================================
-
-def detect_category(text):
-
-    lower = text.lower()
-
-    for category, keywords in KEYWORDS.items():
-
-        for keyword in keywords:
-
-            if keyword.lower() in lower:
-
-                return category, keyword
-
-    return "", ""
 
 
 # =========================================================
@@ -303,10 +231,10 @@ def calculate_score(text):
 
 
 # =========================================================
-# GOOGLE SEARCH
+# SEARCH DUCKDUCKGO
 # =========================================================
 
-def google_search(
+def search_duckduckgo(
     platform,
     domain,
     category
@@ -314,14 +242,42 @@ def google_search(
 
     keywords = KEYWORDS[category]
 
-    query = build_query(
-        domain,
-        keywords
-    )
+    # Instead of putting ALL exact phrases
+    # into one query, use the strongest terms.
 
-    url = GOOGLE_URL.format(
+    if category == "GENERAL":
+
+        query = (
+            f'site:{domain} '
+            '"looking for a job" OR '
+            '"looking for work" OR '
+            '"open to work"'
+        )
+
+    elif category == "HEALTHCARE":
+
+        query = (
+            f'site:{domain} '
+            '(pharmacist OR '
+            '"registered nurse" OR '
+            'PHRN OR USRN) '
+            '(job OR work OR employment)'
+        )
+
+    else:
+
+        query = (
+            f'site:{domain} '
+            '(BPO OR '
+            '"call center") '
+            '(job OR work OR applicant)'
+        )
+
+
+    url = DDG_URL.format(
         quote(query)
     )
+
 
     print()
     print("=" * 70)
@@ -329,16 +285,20 @@ def google_search(
     print("=" * 70)
 
     print(
-        f"Platform : {platform}"
+        "Platform:",
+        platform
     )
 
     print(
-        f"Category : {category}"
+        "Category:",
+        category
     )
 
     print(
-        f"Query    : {query}"
+        "Query:",
+        query
     )
+
 
     try:
 
@@ -347,33 +307,17 @@ def google_search(
             timeout=30
         )
 
+
         print(
-            f"HTTP Status: "
-            f"{response.status_code}"
+            "Search status:",
+            response.status_code
         )
 
-        # -------------------------------------------------
-        # RATE LIMIT
-        # -------------------------------------------------
-
-        if response.status_code == 429:
-
-            print(
-                "GOOGLE RATE LIMIT DETECTED."
-            )
-
-            print(
-                "Waiting before stopping..."
-            )
-
-            time.sleep(15)
-
-            return []
 
         if response.status_code != 200:
 
             print(
-                "Google request failed."
+                "Search failed."
             )
 
             return []
@@ -388,73 +332,78 @@ def google_search(
         results = []
 
 
-        # -------------------------------------------------
-        # FIND GOOGLE RESULT TITLES
-        # -------------------------------------------------
+        # =================================================
+        # DUCKDUCKGO RESULT BLOCKS
+        # =================================================
 
-        for h3 in soup.find_all("h3"):
+        result_blocks = soup.select(
+            ".result"
+        )
+
+
+        print(
+            "Raw result blocks:",
+            len(result_blocks)
+        )
+
+
+        for block in result_blocks:
+
+            title_element = block.select_one(
+                ".result__title"
+            )
+
+            link_element = block.select_one(
+                ".result__a"
+            )
+
+            snippet_element = block.select_one(
+                ".result__snippet"
+            )
+
+
+            if not link_element:
+                continue
+
 
             title = clean(
-                h3.get_text(
+                link_element.get_text(
                     " ",
                     strip=True
                 )
             )
 
-            if not title:
-                continue
 
-
-            link = h3.find_parent("a")
-
-            if not link:
-                continue
-
-
-            href = link.get(
-                "href",
-                ""
+            result_url = (
+                link_element.get(
+                    "href",
+                    ""
+                )
             )
 
-            result_url = unwrap_url(
-                href
-            )
+
+            snippet = ""
+
+            if snippet_element:
+
+                snippet = clean(
+                    snippet_element.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
 
 
             if not result_url:
                 continue
 
 
-            if not belongs_to_platform(
+            if not is_platform_url(
                 result_url,
                 domain
             ):
 
                 continue
-
-
-            # Get nearby result text
-
-            parent = h3.parent
-
-            if parent:
-
-                container = (
-                    parent.parent
-                    or parent
-                )
-
-            else:
-
-                container = h3
-
-
-            snippet = clean(
-                container.get_text(
-                    " ",
-                    strip=True
-                )
-            )
 
 
             combined = (
@@ -464,11 +413,9 @@ def google_search(
             )
 
 
-            matched_keyword = (
-                detect_keyword(
-                    combined,
-                    keywords
-                )
+            matched_keyword = find_keyword(
+                combined,
+                keywords
             )
 
 
@@ -500,13 +447,14 @@ def google_search(
             })
 
 
-        # -------------------------------------------------
+        # =================================================
         # REMOVE DUPLICATES
-        # -------------------------------------------------
+        # =================================================
 
         unique = []
 
         seen = set()
+
 
         for result in results:
 
@@ -523,18 +471,19 @@ def google_search(
 
 
         print(
-            f"Matching public results: "
-            f"{len(unique)}"
+            "Matching public results:",
+            len(unique)
         )
 
 
         return unique
 
 
-    except requests.RequestException as error:
+    except Exception as error:
 
         print(
-            f"REQUEST ERROR: {error}"
+            "SEARCH ERROR:",
+            error
         )
 
         return []
@@ -551,6 +500,7 @@ def create_candidate(result):
         + " "
         + result["snippet"]
     )
+
 
     return {
 
@@ -594,15 +544,17 @@ def create_candidate(result):
 
 
 # =========================================================
-# SEND TO GOOGLE SHEET
+# SEND TO APPS SCRIPT
 # =========================================================
 
 def send_to_google(candidate):
 
-    print()
-    print("Sending candidate to Google Apps Script...")
-
     try:
+
+        print(
+            "Sending to Google Apps Script..."
+        )
+
 
         response = session.post(
 
@@ -616,18 +568,17 @@ def send_to_google(candidate):
 
         )
 
+
         print(
-            f"Google HTTP Status: "
-            f"{response.status_code}"
+            "Google status:",
+            response.status_code
         )
 
         print(
-            "Google Response:"
-        )
-
-        print(
+            "Google response:",
             response.text
         )
+
 
         return response
 
@@ -635,14 +586,15 @@ def send_to_google(candidate):
     except requests.RequestException as error:
 
         print(
-            f"GOOGLE ERROR: {error}"
+            "GOOGLE ERROR:",
+            error
         )
 
         return None
 
 
 # =========================================================
-# PROCESS RESULT
+# PROCESS
 # =========================================================
 
 def process_result(result):
@@ -650,6 +602,7 @@ def process_result(result):
     candidate = create_candidate(
         result
     )
+
 
     print()
     print("-" * 70)
@@ -689,13 +642,14 @@ def process_result(result):
 
     print("-" * 70)
 
+
     send_to_google(
         candidate
     )
 
 
 # =========================================================
-# MAIN RADAR
+# MAIN
 # =========================================================
 
 def run_radar():
@@ -705,30 +659,27 @@ def run_radar():
     print("RSD JOB SEEKER RADAR")
     print("=" * 70)
 
-    print(
-        "Started:",
-        datetime.now().isoformat()
-    )
 
+    searches = 0
 
-    total_searches = 0
-
-    total_matches = 0
+    matches = 0
 
 
     for category in KEYWORDS:
 
         print()
         print(
-            f"### {category}"
+            "###",
+            category
         )
 
 
         for platform, domain in PLATFORMS.items():
 
-            total_searches += 1
+            searches += 1
 
-            results = google_search(
+
+            results = search_duckduckgo(
 
                 platform,
 
@@ -741,21 +692,18 @@ def run_radar():
 
             for result in results:
 
-                total_matches += 1
+                matches += 1
 
                 process_result(
                     result
                 )
 
-                # Small delay between
-                # Apps Script submissions
-
-                time.sleep(1)
+                time.sleep(2)
 
 
-            # Delay between searches
+            # Prevent aggressive requests
 
-            time.sleep(5)
+            time.sleep(8)
 
 
     print()
@@ -764,13 +712,13 @@ def run_radar():
     print("=" * 70)
 
     print(
-        f"Searches: "
-        f"{total_searches}"
+        "Searches:",
+        searches
     )
 
     print(
-        f"Results processed: "
-        f"{total_matches}"
+        "Results processed:",
+        matches
     )
 
     print(
