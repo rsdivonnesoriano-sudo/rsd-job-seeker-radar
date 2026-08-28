@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, parse_qs
 import time
 
 
@@ -17,20 +17,24 @@ APPS_SCRIPT_URL = (
 
 
 # =========================================================
-# SEARCH ENGINES / PUBLIC SOURCES
+# SEARCH ENGINE
 # =========================================================
 
-SEARCH_URL = "https://www.google.com/search?q={}"
+GOOGLE_URL = "https://www.google.com/search?q={}"
 
 
-SEARCH_SITES = {
+# =========================================================
+# PLATFORMS
+# =========================================================
+
+PLATFORMS = {
     "Facebook": "facebook.com",
     "LinkedIn": "linkedin.com"
 }
 
 
 # =========================================================
-# JOB SEEKER KEYWORDS
+# KEYWORDS
 # =========================================================
 
 KEYWORDS = {
@@ -73,27 +77,34 @@ KEYWORDS = {
 
 
 # =========================================================
-# SESSION
+# HTTP SESSION
 # =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": (
+
+    "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
-        "Chrome/131.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9"
+        "Chrome/131.0.0.0 Safari/537.36",
+
+    "Accept":
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,*/*;q=0.8",
+
+    "Accept-Language":
+        "en-US,en;q=0.9"
+
 })
 
 
 # =========================================================
-# TEXT CLEANER
+# CLEAN TEXT
 # =========================================================
 
-def clean_text(value):
+def clean(value):
 
     if not value:
         return ""
@@ -104,12 +115,160 @@ def clean_text(value):
 
 
 # =========================================================
+# GOOGLE URL CLEANER
+# =========================================================
+
+def unwrap_url(href):
+
+    if not href:
+        return ""
+
+    if href.startswith("/url?"):
+
+        parsed = urlparse(href)
+
+        params = parse_qs(
+            parsed.query
+        )
+
+        if "q" in params:
+            return params["q"][0]
+
+        if "url" in params:
+            return params["url"][0]
+
+    if href.startswith("http://"):
+        return href
+
+    if href.startswith("https://"):
+        return href
+
+    return ""
+
+
+# =========================================================
+# CHECK PLATFORM
+# =========================================================
+
+def belongs_to_platform(url, domain):
+
+    try:
+
+        host = (
+            urlparse(url)
+            .netloc
+            .lower()
+        )
+
+        return domain in host
+
+    except Exception:
+
+        return False
+
+
+# =========================================================
+# BUILD QUERY
+# =========================================================
+
+def build_query(domain, keywords):
+
+    keyword_query = " OR ".join(
+        f'"{keyword}"'
+        for keyword in keywords
+    )
+
+    return (
+        f"site:{domain} "
+        f"({keyword_query})"
+    )
+
+
+# =========================================================
+# DETECT MATCHING KEYWORD
+# =========================================================
+
+def detect_keyword(text, keywords):
+
+    text = text.lower()
+
+    matches = []
+
+    for keyword in keywords:
+
+        if keyword.lower() in text:
+
+            matches.append(
+                keyword
+            )
+
+    if not matches:
+        return ""
+
+    # longest matching keyword first
+    matches.sort(
+        key=len,
+        reverse=True
+    )
+
+    return matches[0]
+
+
+# =========================================================
+# DETECT CATEGORY
+# =========================================================
+
+def detect_category(text):
+
+    lower = text.lower()
+
+    for category, keywords in KEYWORDS.items():
+
+        for keyword in keywords:
+
+            if keyword.lower() in lower:
+
+                return category, keyword
+
+    return "", ""
+
+
+# =========================================================
+# PROFESSION
+# =========================================================
+
+def detect_profession(text):
+
+    lower = text.lower()
+
+    if "pharmacist" in lower:
+        return "Pharmacist"
+
+    if "phrn" in lower:
+        return "PHRN"
+
+    if "usrn" in lower:
+        return "USRN"
+
+    if "registered nurse" in lower:
+        return "Registered Nurse"
+
+    if "call center" in lower:
+        return "Call Center Agent"
+
+    if "bpo" in lower:
+        return "BPO Agent"
+
+    return ""
+
+
+# =========================================================
 # SCORE
 # =========================================================
 
 def calculate_score(text):
 
-    text = text.lower()
+    lower = text.lower()
 
     score = 0
 
@@ -117,14 +276,21 @@ def calculate_score(text):
 
         for keyword in KEYWORDS[category]:
 
-            if keyword.lower() in text:
+            if keyword.lower() in lower:
 
                 if (
-                    "looking for a job" in keyword.lower()
+                    "looking for a job"
+                    in keyword.lower()
+
                     or
-                    "looking for work" in keyword.lower()
+
+                    "looking for work"
+                    in keyword.lower()
+
                     or
-                    "seeking employment" in keyword.lower()
+
+                    "seeking employment"
+                    in keyword.lower()
                 ):
 
                     score += 30
@@ -137,64 +303,42 @@ def calculate_score(text):
 
 
 # =========================================================
-# DETECT PROFESSION
+# GOOGLE SEARCH
 # =========================================================
 
-def detect_profession(text):
-
-    text = text.lower()
-
-    if "pharmacist" in text:
-        return "Pharmacist"
-
-    if "phrn" in text:
-        return "PHRN"
-
-    if "usrn" in text:
-        return "USRN"
-
-    if "registered nurse" in text:
-        return "Registered Nurse"
-
-    if "call center" in text:
-        return "Call Center Agent"
-
-    if "bpo" in text:
-        return "BPO Agent"
-
-    return ""
-
-
-# =========================================================
-# SEARCH PUBLIC RESULTS
-# =========================================================
-
-def search_public_results(
+def google_search(
     platform,
-    site,
-    keyword,
+    domain,
     category
 ):
 
-    query = (
-        f'site:{site} '
-        f'"{keyword}" '
-        f'Philippines'
+    keywords = KEYWORDS[category]
+
+    query = build_query(
+        domain,
+        keywords
     )
 
-    encoded_query = quote(query)
-
-    url = SEARCH_URL.format(
-        encoded_query
+    url = GOOGLE_URL.format(
+        quote(query)
     )
 
     print()
     print("=" * 70)
-    print("SEARCHING")
+    print("SEARCH")
     print("=" * 70)
-    print(f"Platform : {platform}")
-    print(f"Category : {category}")
-    print(f"Keyword  : {keyword}")
+
+    print(
+        f"Platform : {platform}"
+    )
+
+    print(
+        f"Category : {category}"
+    )
+
+    print(
+        f"Query    : {query}"
+    )
 
     try:
 
@@ -204,14 +348,32 @@ def search_public_results(
         )
 
         print(
-            f"Search status: "
+            f"HTTP Status: "
             f"{response.status_code}"
         )
+
+        # -------------------------------------------------
+        # RATE LIMIT
+        # -------------------------------------------------
+
+        if response.status_code == 429:
+
+            print(
+                "GOOGLE RATE LIMIT DETECTED."
+            )
+
+            print(
+                "Waiting before stopping..."
+            )
+
+            time.sleep(15)
+
+            return []
 
         if response.status_code != 200:
 
             print(
-                "Search request failed."
+                "Google request failed."
             )
 
             return []
@@ -226,92 +388,96 @@ def search_public_results(
         results = []
 
 
-        # Google result containers
-        for item in soup.select("div.MjjYud"):
+        # -------------------------------------------------
+        # FIND GOOGLE RESULT TITLES
+        # -------------------------------------------------
 
-            link_element = item.select_one(
-                "a"
+        for h3 in soup.find_all("h3"):
+
+            title = clean(
+                h3.get_text(
+                    " ",
+                    strip=True
+                )
             )
 
-            if not link_element:
-
+            if not title:
                 continue
 
 
-            href = (
-                link_element.get("href")
-                or ""
-            )
+            link = h3.find_parent("a")
 
-
-            if not href:
-
+            if not link:
                 continue
 
 
-            if not is_valid_platform_url(
-                href,
-                site
+            href = link.get(
+                "href",
+                ""
+            )
+
+            result_url = unwrap_url(
+                href
+            )
+
+
+            if not result_url:
+                continue
+
+
+            if not belongs_to_platform(
+                result_url,
+                domain
             ):
 
                 continue
 
 
-            title_element = item.select_one(
-                "h3"
-            )
+            # Get nearby result text
+
+            parent = h3.parent
+
+            if parent:
+
+                container = (
+                    parent.parent
+                    or parent
+                )
+
+            else:
+
+                container = h3
 
 
-            if not title_element:
-
-                continue
-
-
-            title = clean_text(
-                title_element.get_text(
+            snippet = clean(
+                container.get_text(
                     " ",
                     strip=True
                 )
             )
 
 
-            snippet_element = item.select_one(
-                ".VwiC3b"
-            )
-
-
-            snippet = ""
-
-            if snippet_element:
-
-                snippet = clean_text(
-                    snippet_element.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-
             combined = (
-                f"{title} {snippet}"
+                title +
+                " " +
+                snippet
             )
 
 
-            if keyword.lower() not in combined.lower():
+            matched_keyword = (
+                detect_keyword(
+                    combined,
+                    keywords
+                )
+            )
+
+
+            if not matched_keyword:
 
                 continue
 
 
             results.append({
-
-                "title":
-                    title,
-
-                "url":
-                    href,
-
-                "snippet":
-                    snippet,
 
                 "platform":
                     platform,
@@ -320,51 +486,58 @@ def search_public_results(
                     category,
 
                 "keyword":
-                    keyword
+                    matched_keyword,
+
+                "title":
+                    title,
+
+                "snippet":
+                    snippet,
+
+                "url":
+                    result_url
 
             })
 
 
+        # -------------------------------------------------
+        # REMOVE DUPLICATES
+        # -------------------------------------------------
+
+        unique = []
+
+        seen = set()
+
+        for result in results:
+
+            url = result["url"]
+
+            if url in seen:
+                continue
+
+            seen.add(url)
+
+            unique.append(
+                result
+            )
+
+
         print(
             f"Matching public results: "
-            f"{len(results)}"
+            f"{len(unique)}"
         )
 
-        return results
+
+        return unique
 
 
     except requests.RequestException as error:
 
         print(
-            f"Search error: {error}"
+            f"REQUEST ERROR: {error}"
         )
 
         return []
-
-
-# =========================================================
-# VALIDATE PLATFORM URL
-# =========================================================
-
-def is_valid_platform_url(
-    url,
-    site
-):
-
-    try:
-
-        parsed = urlparse(url)
-
-        hostname = (
-            parsed.netloc
-            .lower()
-        )
-
-        return site in hostname
-
-    except Exception:
-
-        return False
 
 
 # =========================================================
@@ -373,41 +546,19 @@ def is_valid_platform_url(
 
 def create_candidate(result):
 
-    title = result["title"]
-
-    snippet = result["snippet"]
-
-    platform = result["platform"]
-
-    category = result["category"]
-
-    keyword = result["keyword"]
-
-    source_url = result["url"]
-
-
-    combined_text = (
-        f"{title} {snippet}"
+    text = (
+        result["title"]
+        + " "
+        + result["snippet"]
     )
 
-
-    profession = detect_profession(
-        combined_text
-    )
-
-
-    score = calculate_score(
-        combined_text
-    )
-
-
-    candidate = {
+    return {
 
         "platform":
-            platform,
+            result["platform"],
 
         "name":
-            title,
+            result["title"],
 
         "email":
             "",
@@ -416,25 +567,25 @@ def create_candidate(result):
             "",
 
         "profession":
-            profession,
+            detect_profession(text),
 
         "resume_url":
             "",
 
         "url":
-            source_url,
+            result["url"],
 
         "text":
-            combined_text,
+            text,
 
         "score":
-            score,
+            calculate_score(text),
 
         "keyword":
-            keyword,
+            result["keyword"],
 
         "category":
-            category,
+            result["category"],
 
         "found_at":
             datetime.now().isoformat()
@@ -442,19 +593,16 @@ def create_candidate(result):
     }
 
 
-    return candidate
-
-
 # =========================================================
-# SEND TO GOOGLE
+# SEND TO GOOGLE SHEET
 # =========================================================
 
 def send_to_google(candidate):
 
-    try:
+    print()
+    print("Sending candidate to Google Apps Script...")
 
-        print()
-        print("Sending result to Google...")
+    try:
 
         response = session.post(
 
@@ -468,18 +616,18 @@ def send_to_google(candidate):
 
         )
 
-
         print(
             f"Google HTTP Status: "
             f"{response.status_code}"
         )
 
-
         print(
-            f"Google Response: "
-            f"{response.text}"
+            "Google Response:"
         )
 
+        print(
+            response.text
+        )
 
         return response
 
@@ -487,8 +635,7 @@ def send_to_google(candidate):
     except requests.RequestException as error:
 
         print(
-            f"Google connection error: "
-            f"{error}"
+            f"GOOGLE ERROR: {error}"
         )
 
         return None
@@ -504,44 +651,43 @@ def process_result(result):
         result
     )
 
-
     print()
     print("-" * 70)
     print("MATCH FOUND")
     print("-" * 70)
 
     print(
-        f"Platform: "
-        f"{candidate['platform']}"
+        "Platform:",
+        candidate["platform"]
     )
 
     print(
-        f"Category: "
-        f"{candidate['category']}"
+        "Category:",
+        candidate["category"]
     )
 
     print(
-        f"Keyword: "
-        f"{candidate['keyword']}"
+        "Keyword:",
+        candidate["keyword"]
     )
 
     print(
-        f"Profession: "
-        f"{candidate['profession'] or 'Not detected'}"
+        "Profession:",
+        candidate["profession"]
+        or "Not detected"
     )
 
     print(
-        f"Public URL: "
-        f"{candidate['url']}"
+        "Public URL:",
+        candidate["url"]
     )
 
     print(
-        f"Score: "
-        f"{candidate['score']}"
+        "Score:",
+        candidate["score"]
     )
 
     print("-" * 70)
-
 
     send_to_google(
         candidate
@@ -549,7 +695,7 @@ def process_result(result):
 
 
 # =========================================================
-# RUN SEARCH
+# MAIN RADAR
 # =========================================================
 
 def run_radar():
@@ -565,51 +711,51 @@ def run_radar():
     )
 
 
-    search_count = 0
+    total_searches = 0
 
-    result_count = 0
+    total_matches = 0
 
 
     for category in KEYWORDS:
 
         print()
         print(
-            f"\n### {category}"
+            f"### {category}"
         )
 
 
-        for keyword in KEYWORDS[category]:
+        for platform, domain in PLATFORMS.items():
 
-            for platform, site in SEARCH_SITES.items():
+            total_searches += 1
 
-                search_count += 1
+            results = google_search(
+
+                platform,
+
+                domain,
+
+                category
+
+            )
 
 
-                results = search_public_results(
+            for result in results:
 
-                    platform,
+                total_matches += 1
 
-                    site,
-
-                    keyword,
-
-                    category
-
+                process_result(
+                    result
                 )
 
+                # Small delay between
+                # Apps Script submissions
 
-                for result in results:
-
-                    result_count += 1
-
-                    process_result(
-                        result
-                    )
-
-                    time.sleep(1)
+                time.sleep(1)
 
 
-                time.sleep(3)
+            # Delay between searches
+
+            time.sleep(5)
 
 
     print()
@@ -618,12 +764,13 @@ def run_radar():
     print("=" * 70)
 
     print(
-        f"Searches: {search_count}"
+        f"Searches: "
+        f"{total_searches}"
     )
 
     print(
         f"Results processed: "
-        f"{result_count}"
+        f"{total_matches}"
     )
 
     print(
